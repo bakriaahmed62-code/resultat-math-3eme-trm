@@ -234,51 +234,97 @@
     let studentsDatabase = {};
 
     async function loadCSVData() {
+        let studentsCount = 0;
+        
         for (let file of csvFiles) {
             try {
-                const response = await fetch(file);
+                // استخدام encodeURI لتفادي أخطاء مسافات الأسماء العربية
+                const response = await fetch(encodeURI(file));
                 if (!response.ok) continue; 
+                
                 const text = await response.text();
-                const lines = text.split('\n');
+                // فصل الأسطر بشكل يدعم جميع أنظمة التشغيل
+                const lines = text.split(/\r?\n/);
 
                 let classInfo = "فوج غير معروف";
 
                 // استخراج اسم الفوج
-                for (let i = 0; i < 6; i++) {
+                for (let i = 0; i < Math.min(10, lines.length); i++) {
                     if (lines[i] && lines[i].includes("الفوج التربوي")) {
-                        let parts = lines[i].split("الفوج التربوي :")[1].split("مادة :")[0];
-                        classInfo = parts.replace(/,/g, '').trim();
+                        let parts = lines[i].split("الفوج التربوي :")[1];
+                        if(parts) {
+                            classInfo = parts.split("مادة :")[0].replace(/,/g, '').replace(/;/g, '').trim();
+                        }
                     }
                 }
 
-                // البحث عن بداية البيانات
-                let headerIndex = lines.findIndex(line => line.toLowerCase().includes('matricule'));
+                // البحث عن سطر العناوين
+                let headerIndex = lines.findIndex(line => line.toLowerCase().includes('matricule') || line.includes('رقم التعريف'));
                 if (headerIndex === -1) headerIndex = 6; 
 
-                // قراءة النقاط
-                for (let j = headerIndex + 2; j < lines.length; j++) {
-                    let row = lines[j].split(',');
-                    if (row.length < 7) continue;
+                // تحديد الفاصل بذكاء (فاصلة أو فاصلة منقوطة)
+                let headerLine = lines[headerIndex].toLowerCase();
+                let delimiter = headerLine.includes(';') ? ';' : ',';
+                let headers = headerLine.split(delimiter).map(h => h.trim());
 
-                    let mat = row[0].trim();
-                    if (!mat || mat === "matricule" || mat === "رقم التعريف" || mat === "") continue;
+                // تحديد أرقام الأعمدة تلقائياً أينما كانت
+                let matIdx = headers.findIndex(h => h.includes('matricule') || h.includes('تعريف'));
+                if(matIdx === -1) matIdx = 0; 
+                
+                let nomIdx = headers.findIndex(h => h.includes('nom') || h.includes('لقب'));
+                if(nomIdx === -1) nomIdx = 1;
+                
+                let prenomIdx = headers.findIndex(h => h.includes('prenom') || h.includes('اسم'));
+                if(prenomIdx === -1) prenomIdx = 2;
+
+                let ccIdx = headers.findIndex(h => h === '01' || h.includes('مستمر'));
+                if(ccIdx === -1) ccIdx = 4;
+
+                let quizIdx = headers.findIndex(h => h === '03' || h.includes('فرض'));
+                if(quizIdx === -1) quizIdx = 5;
+
+                let examIdx = headers.findIndex(h => h === '09' || h.includes('اختبار'));
+                if(examIdx === -1) examIdx = 6;
+
+                // قراءة بيانات التلاميذ
+                for (let j = headerIndex + 1; j < lines.length; j++) {
+                    if (!lines[j].trim()) continue; 
+
+                    let row = lines[j].split(delimiter);
+                    if (row.length < 4) continue;
+
+                    let mat = row[matIdx] ? row[matIdx].trim().replace(/['"]/g, '') : "";
+                    
+                    // التأكد أن الرقم المدرسي طويل (أكبر من 10 أرقام) لكي لا نأخذ رقم التسلسل
+                    if (!mat || mat.length < 10 || mat === "matricule" || mat.includes("تعريف")) continue;
 
                     studentsDatabase[mat] = {
-                        nom: row[1].trim(),     
-                        prenom: row[2].trim(),  
+                        nom: row[nomIdx] ? row[nomIdx].trim().replace(/['"]/g, '') : "",     
+                        prenom: row[prenomIdx] ? row[prenomIdx].trim().replace(/['"]/g, '') : "",  
                         class: classInfo,
-                        cc: parseFloat(row[4]) || 0,
-                        quiz: parseFloat(row[5]) || 0,
-                        exam: parseFloat(row[6]) || 0
+                        // تحويل العلامات العشرية الأوروبية (,) إلى نقطة (.) إن وجدت
+                        cc: row[ccIdx] ? parseFloat(row[ccIdx].replace(',', '.')) || 0 : 0,
+                        quiz: row[quizIdx] ? parseFloat(row[quizIdx].replace(',', '.')) || 0 : 0,
+                        exam: row[examIdx] ? parseFloat(row[examIdx].replace(',', '.')) || 0 : 0
                     };
+                    studentsCount++;
                 }
             } catch (e) {
                 console.error("خطأ في قراءة الملف: " + file, e);
             }
         }
+        
+        // عرض حالة التحميل أسفل الصفحة
+        let footer = document.querySelector('.footer');
+        if(footer) {
+            if(studentsCount > 0) {
+                footer.innerHTML += `<br><span style="color: #10b981; font-weight: bold; font-size: 16px;">✅ حالة النظام: تم تحميل بيانات ${studentsCount} تلميذ بنجاح.</span>`;
+            } else {
+                footer.innerHTML += `<br><span style="color: #ef4444; font-weight: bold; font-size: 16px;">⚠️ تنبيه: لم يتم تحميل البيانات، راجع أسماء الملفات.</span>`;
+            }
+        }
     }
 
-    // تحميل البيانات عند فتح الصفحة
     window.onload = loadCSVData;
 
     function searchStudent() {
@@ -292,24 +338,20 @@
             
             let student = studentsDatabase[input];
             
-            // عرض بيانات التلميذ
             document.getElementById('studentHeader').innerHTML = `
                 <h2>👤 التلميذ(ة): ${student.prenom} ${student.nom}</h2>
                 <p>🏫 الفوج التربوي: ${student.class}</p>
                 <p>📅 الفصل الدراسي: الفصل الثالث</p>
             `;
             
-            // عرض النقاط
             document.getElementById('ccMark').innerText = student.cc;
             document.getElementById('quizMark').innerText = student.quiz;
             document.getElementById('examMark').innerText = student.exam;
 
-            // حساب المعدل
             let avg = (student.cc + student.quiz + (student.exam * 2)) / 4;
             const avgDisplay = document.getElementById('averageDisplay');
             avgDisplay.innerText = `المعدل الفصلي للمادة: ${avg.toFixed(2)} / 20`;
 
-            // تلوين المعدل
             if (avg >= 10) {
                 avgDisplay.className = "average-zone pass";
             } else {
@@ -321,6 +363,5 @@
         }
     }
 </script>
-
 </body>
 </html>
